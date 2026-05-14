@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>物聯網競賽儀表板</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #121212;
+            color: white;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        .status {
+            font-size: 24px;
+            margin-bottom: 20px;
+            padding: 10px 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .connecting { background-color: #ffa500; color: black; }
+        .connected { background-color: #00ff00; color: black; }
+        .disconnected { background-color: #ff0000; }
+
+        .photo-container {
+            width: 90%;
+            max-width: 1100px;
+            height: 72vh;
+            margin: 10px 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border-radius: 20px;
+            overflow: hidden;
+            background-color: #222;
+        }
+        .photo {
+            width: auto;
+            height: 100%;
+            max-width: 100%;
+            object-fit: contain;
+            display: none;
+        }
+        .photo.active {
+            display: block;
+        }
+        .leader-indicator {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            background-color: rgba(0, 0, 0, 0.75);
+            color: white;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+        }
+        .photo-container {
+            position: relative;
+        }
+
+        .progress-section {
+            width: 90%;
+            max-width: 900px;
+            margin-top: 12px;
+            padding: 0 20px;
+        }
+        .progress-container {
+            width: 100%;
+            margin: 6px 0;
+        }
+        .progress-bar {
+            height: 12px;
+            background-color: #2a2a2a;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 6px;
+            position: relative;
+        }
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            transition: width 0.4s ease;
+        }
+        .red-progress .progress-fill { background-color: #ff4d4d; }
+        .green-progress .progress-fill { background-color: #49d849; }
+        .step-count {
+            font-size: 28px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+        .team-label {
+            font-size: 16px;
+            margin-bottom: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div id="status" class="status connecting">連線中...</div>
+    
+    <!-- 贏家音效 -->
+    <audio id="win-sound" preload="auto">
+        <source src="win.mp3" type="audio/mpeg">
+    </audio>
+
+    <div class="photo-container">
+        <div id="leader-indicator" class="leader-indicator">紅隊領先</div>
+        <img id="photo-1" class="photo" src="spot1.png" alt="景點1">
+        <img id="photo-2" class="photo" src="spot2.png" alt="景點2">
+        <img id="photo-3" class="photo" src="spot3.png" alt="景點3">
+        <img id="photo-4" class="photo" src="spot4.png" alt="景點4">
+        <img id="photo-5" class="photo" src="spot5.png" alt="景點5">
+        <img id="photo-6" class="photo" src="spot6.png" alt="景點6">
+        <img id="photo-7" class="photo" src="spot7.png" alt="景點7">
+        <img id="photo-8" class="photo" src="spot8.png" alt="景點8">
+        <img id="photo-9" class="photo" src="spot9.png" alt="景點9">
+        <img id="photo-10" class="photo" src="spot10.png" alt="景點10">
+    </div>
+
+    <div class="progress-section">
+        <div class="progress-container">
+            <div class="team-label">紅隊進度</div>
+            <div class="step-count" id="red-steps">0</div>
+            <div class="progress-bar red-progress">
+                <div class="progress-fill" id="red-progress"></div>
+            </div>
+        </div>
+        <div class="progress-container">
+            <div class="team-label">綠隊進度</div>
+            <div class="step-count" id="green-steps">0</div>
+            <div class="progress-bar green-progress">
+                <div class="progress-fill" id="green-progress"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const statusDiv = document.getElementById('status');
+        const redSteps = document.getElementById('red-steps');
+        const greenSteps = document.getElementById('green-steps');
+        const redProgress = document.getElementById('red-progress');
+        const greenProgress = document.getElementById('green-progress');
+        const winSound = document.getElementById('win-sound');
+
+        // 比賽狀態
+        let gameWinner = null; // 'red', 'green', 或 null
+        let finalWinnerSteps = 0;
+
+        // MQTT 連線設定
+        const options = {
+            username: '',
+            password: '',
+            clientId: 'web-client-' + Math.random().toString(16).substr(2, 8),
+            protocolVersion: 4,
+            keepalive: 60,
+            reconnectPeriod: 1000
+        };
+
+        // 連線字符串 - 使用 WSS (WebSocket Secure)
+        const connectUrl = 'wss://mqttgo.io:8084';
+
+        // 建立 MQTT 客戶端
+        const client = mqtt.connect(connectUrl, options);
+
+        // 連線成功
+        client.on('connect', function() {
+            console.log('MQTT connected successfully');
+            statusDiv.textContent = '已連線';
+            statusDiv.className = 'status connected';
+            client.subscribe('SL/runner/01', function(err) {
+                if (!err) {
+                    console.log('Subscribed to SL/runner/01');
+                }
+            });
+        });
+
+        // 連線失敗
+        client.on('error', function(err) {
+            console.error('Connection error:', err);
+            statusDiv.textContent = '斷線';
+            statusDiv.className = 'status disconnected';
+        });
+
+        // 連線中斷
+        client.on('close', function() {
+            console.log('Connection closed');
+            statusDiv.textContent = '斷線';
+            statusDiv.className = 'status disconnected';
+        });
+
+        // 收到訊息
+        client.on('message', function(topic, message) {
+            const payload = message.toString();
+            console.log('Message received on ' + topic + ':', payload);
+            const parts = payload.split(',');
+            if (parts.length === 2) {
+                const red = parseInt(parts[0], 10);
+                const green = parseInt(parts[1], 10);
+                updateProgress(red, green);
+            }
+        });
+
+        // 更新進度
+        function updateProgress(red, green) {
+            redSteps.textContent = red;
+            greenSteps.textContent = green;
+            redProgress.style.width = (red / 100) * 100 + '%';
+            greenProgress.style.width = (green / 100) * 100 + '%';
+
+            // 檢測是否有贏家
+            if (gameWinner === null) {
+                if (red >= 100) {
+                    gameWinner = 'red';
+                    finalWinnerSteps = red;
+                    playWinSequence('red');
+                } else if (green >= 100) {
+                    gameWinner = 'green';
+                    finalWinnerSteps = green;
+                    playWinSequence('green');
+                }
+            }
+
+            // 決定領先者和顯示的景點
+            let leader = 'red';
+            let leaderText = '紅隊領先';
+            let displaySteps = 0;
+
+            // 如果有贏家，就顯示贏家的景點
+            if (gameWinner) {
+                leader = gameWinner;
+                displaySteps = finalWinnerSteps;
+                leaderText = gameWinner === 'red' ? '🏆 紅隊勝利!' : '🏆 綠隊勝利!';
+            } else {
+                // 沒有贏家時，顯示領先者的景點
+                if (green > red) {
+                    leader = 'green';
+                    leaderText = '綠隊領先';
+                    displaySteps = green;
+                } else if (red > green) {
+                    leader = 'red';
+                    leaderText = '紅隊領先';
+                    displaySteps = red;
+                } else {
+                    leaderText = '平手';
+                    displaySteps = red;
+                }
+            }
+
+            // 更新領先者指示器
+            const leaderIndicator = document.getElementById('leader-indicator');
+            leaderIndicator.textContent = leaderText;
+            if (gameWinner === 'red') {
+                leaderIndicator.style.backgroundColor = 'rgba(255, 0, 0, 0.9)';
+                leaderIndicator.style.fontSize = '22px';
+            } else if (gameWinner === 'green') {
+                leaderIndicator.style.backgroundColor = 'rgba(0, 255, 0, 0.9)';
+                leaderIndicator.style.fontSize = '22px';
+            } else {
+                leaderIndicator.style.backgroundColor = leader === 'red' ? 'rgba(255, 0, 0, 0.8)' : leader === 'green' ? 'rgba(0, 255, 0, 0.8)' : 'rgba(128, 128, 128, 0.8)';
+                leaderIndicator.style.fontSize = '18px';
+            }
+
+            // 計算景點編號 (每10步一個景點)
+            const spotNumber = Math.min(Math.floor(displaySteps / 10) + 1, 10);
+
+            // 隱藏所有照片
+            const photos = document.querySelectorAll('.photo');
+            photos.forEach(photo => photo.classList.remove('active'));
+
+            // 顯示對應的照片
+            const activePhoto = document.getElementById(`photo-${spotNumber}`);
+            if (activePhoto) {
+                activePhoto.classList.add('active');
+            }
+        }
+
+        // 播放贏家序列
+        function playWinSequence(winner) {
+            console.log(winner + ' team wins!');
+            
+            // 播放音效
+            if (winSound) {
+                winSound.currentTime = 0;
+                winSound.play().catch(e => console.log('Audio play failed:', e));
+            }
+
+            // 照片容器閃爍效果
+            const photoContainer = document.querySelector('.photo-container');
+            photoContainer.style.boxShadow = '0 0 30px ' + (winner === 'red' ? 'rgba(255, 0, 0, 0.8)' : 'rgba(0, 255, 0, 0.8)');
+            
+            // 閃爍動畫
+            let flashCount = 0;
+            const flashInterval = setInterval(() => {
+                flashCount++;
+                if (flashCount % 2 === 0) {
+                    photoContainer.style.boxShadow = '0 0 30px ' + (winner === 'red' ? 'rgba(255, 0, 0, 0.8)' : 'rgba(0, 255, 0, 0.8)');
+                } else {
+                    photoContainer.style.boxShadow = '0 0 60px ' + (winner === 'red' ? 'rgba(255, 0, 0, 1)' : 'rgba(0, 255, 0, 1)');
+                }
+                if (flashCount >= 10) {
+                    clearInterval(flashInterval);
+                    photoContainer.style.boxShadow = '0 0 40px ' + (winner === 'red' ? 'rgba(255, 0, 0, 0.6)' : 'rgba(0, 255, 0, 0.6)');
+                }
+            }, 300);
+        }
+    </script>
+</body>
+</html>
