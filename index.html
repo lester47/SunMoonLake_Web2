@@ -202,8 +202,9 @@
             console.log('Message received on ' + topic + ':', payload);
             const parts = payload.split(',');
             if (parts.length === 2) {
-                const red = parseInt(parts[0], 10);
-                const green = parseInt(parts[1], 10);
+                // MQTT payload 傳來的數值順序與畫面顯示的隊伍相反，這裡交換過來。
+                const red = parseInt(parts[1], 10);
+                const green = parseInt(parts[0], 10);
                 updateProgress(red, green);
             }
         });
